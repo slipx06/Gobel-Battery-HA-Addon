@@ -1,0 +1,22 @@
+{
+    "mqtt_broker": "localhost",
+    "mqtt_port": 1883,
+    "mqtt_username": "",
+    "mqtt_password": "",
+    "host_name": "homeassistant",
+    "mqtt_discovery_topic": "homeassistant",
+    "device_name": "Gobel Monitor",
+    "battery_manufacturer": "Gobel Power",
+    "battery_model": "GP-SR1-PC200",
+    "max_parallel_allowed": 16,
+    "connection_type": "serial",
+    "battery_port": "rs232",
+    "bms_type": "PACE_LV",
+    "bms_ip_address": "10.0.0.5",
+    "bms_ip_port": 9999,
+    "bms_usb_port": "/dev/ttyUSB0",
+    "bms_baud_rate": 115200,
+    "data_refresh_interval": 5,
+    "debug": 1,
+    "if_random": 0
+  }

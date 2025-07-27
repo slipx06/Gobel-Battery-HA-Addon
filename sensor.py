@@ -1,3 +1,7 @@
+#!/usr/bin/env python3
+"""
+Gobel Battery Monitor - Standalone Version
+"""
 import paho.mqtt.client as mqtt
 import time
 import os
@@ -5,6 +9,8 @@ import json
 import sys
 import logging
 import threading
+import argparse
+import platform
 from bms_comm import BMSCommunication
 from pacebms_rs232 import PACEBMS232
 from pacebms_rs485 import PACEBMS485
@@ -13,84 +19,152 @@ from jkbms_rs485 import JKBMS485
 from ha_rest_api import HA_REST_API
 from ha_mqtt import HA_MQTT
 
+def check_dependencies():
+    """Check if all required dependencies are available"""
+    missing_deps = []
+    
+    try:
+        import paho.mqtt.client
+    except ImportError:
+        missing_deps.append("paho-mqtt")
+    
+    try:
+        import serial
+    except ImportError:
+        missing_deps.append("pyserial")
+    
+    try:
+        import requests
+    except ImportError:
+        missing_deps.append("requests")
+    
+    if missing_deps:
+        print(f"Missing dependencies: {', '.join(missing_deps)}")
+        print("Please install them with: pip install -r requirements.txt")
+        return False
+    
+    return True
+
+def get_default_serial_port():
+    """Get the default serial port based on the platform"""
+    system = platform.system()
+    
+    if system == "Windows":
+        return "COM1"  # Default Windows COM port
+    elif system == "Darwin":  # macOS
+        return "/dev/tty.usbserial-*"  # Common macOS USB serial
+    else:  # Linux and others
+        return "/dev/ttyUSB0"  # Default Linux USB serial
+
+def parse_arguments():
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(description='Gobel Battery Monitor')
+    parser.add_argument('--config', default='config.json', help='Configuration file path')
+    parser.add_argument('--debug', action='store_true', help='Enable debug logging')
+    return parser.parse_args()
+
 # Define the load_config function
-def load_config():
-    config_path = '/data/options.json'
-    if os.path.exists(config_path):
-        print("Loading options.json")
-        try:
-            with open(config_path) as file:
-                config = json.load(file)
-                # print("Config: " + json.dumps(config))
-                return config
-        except Exception as e:
-            print("Error loading configuration: %s", str(e))
-            return None
-    else:
-        print("No config file found.")
-        print("Please make a configuration in the panel")
-        return None
+def load_config(config_file='config.json'):
+    # Try multiple config file locations
+    config_paths = [
+        config_file,  # Command line specified or default
+        'config.json',  # Local config file
+        '/data/options.json',  # Home Assistant addon format (for compatibility)
+        os.path.join(os.path.dirname(__file__), 'config.json')  # Relative to script
+    ]
+    
+    for config_path in config_paths:
+        if os.path.exists(config_path):
+            print(f"Loading configuration from: {config_path}")
+            try:
+                with open(config_path) as file:
+                    config = json.load(file)
+                    return config
+            except Exception as e:
+                print(f"Error loading configuration from {config_path}: {str(e)}")
+                continue
+    
+    print("No config file found. Please create a config.json file.")
+    print("You can copy config.json.example to config.json and edit it.")
+    return None
 
-
-
-# Load the configuration
-config = load_config()
-
-
+# Global variables
+config = None
 buffer_size = 1024
-# Accessing the parameters
-mqtt_broker = config.get('mqtt_broker')
-mqtt_port = config.get('mqtt_port')
-mqtt_username = config.get('mqtt_username')
-mqtt_password = config.get('mqtt_password')
-host_name = config.get('host_name')
-mqtt_discovery_topic = config.get('mqtt_discovery_topic')
-device_name = config.get('device_name')
-battery_manufacturer = config.get('battery_manufacturer')
-battery_model = config.get('battery_model')
-max_parallel_allowed = config.get('max_parallel_allowed')
-interface = config.get('connection_type')
-battery_port = config.get('battery_port')
-bms_type = config.get('bms_type')
-ethernet_ip = config.get('bms_ip_address')
-ethernet_port = config.get('bms_ip_port')
-serial_port = config.get('bms_usb_port')
-baud_rate = config.get('bms_baud_rate')
-data_refresh_interval = config.get('data_refresh_interval')
-debug = config.get('debug')
-if_random = config.get('if_random')
-
-device_nameprocessed = device_name.lower().replace(" ", "_")
-
-device_info = {
-    "identifiers": f"{device_nameprocessed}_{battery_manufacturer}_{battery_model}",
-    "name": device_name,
-    "manufacturer": battery_manufacturer,
-    "model": battery_model,
-    "sw_version": "1.0"
-}
-
-device_name = device_nameprocessed
-
-# Configure logging
-logging.basicConfig(level=logging.DEBUG if debug else logging.INFO,
-                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
-# Declare bms_comm in the global scope
 bms_comm = None
 
-def initiate_bms_communication():
-    global bms_comm
-    bms_comm = BMSCommunication(interface, serial_port, baud_rate, ethernet_ip, ethernet_port, buffer_size, debug)
-    return bms_comm.connect()
+def run(config_file='config.json', debug_mode=False):
+    """Main run function"""
+    global config, bms_comm
+    
+    # Load the configuration
+    config = load_config(config_file)
+    if not config:
+        print("Failed to load configuration. Exiting.")
+        return
+    
+    # Override debug setting if specified via command line
+    if debug_mode:
+        config['debug'] = 1
+    
+    # Accessing the parameters
+    mqtt_broker = config.get('mqtt_broker')
+    mqtt_port = config.get('mqtt_port')
+    mqtt_username = config.get('mqtt_username')
+    mqtt_password = config.get('mqtt_password')
+    host_name = config.get('host_name')
+    mqtt_discovery_topic = config.get('mqtt_discovery_topic')
+    device_name = config.get('device_name')
+    battery_manufacturer = config.get('battery_manufacturer')
+    battery_model = config.get('battery_model')
+    max_parallel_allowed = config.get('max_parallel_allowed')
+    interface = config.get('connection_type')
+    battery_port = config.get('battery_port')
+    bms_type = config.get('bms_type')
+    ethernet_ip = config.get('bms_ip_address')
+    ethernet_port = config.get('bms_ip_port')
+    serial_port = config.get('bms_usb_port')
+    baud_rate = config.get('bms_baud_rate')
+    data_refresh_interval = config.get('data_refresh_interval')
+    debug = config.get('debug')
+    if_random = config.get('if_random')
+    
+    # Set default serial port if not specified
+    if not serial_port and interface == 'serial':
+        serial_port = get_default_serial_port()
+        print(f"Using default serial port: {serial_port}")
+    
+    # Set default baud rate if not specified
+    if not baud_rate and interface == 'serial':
+        baud_rate = 115200
+        print(f"Using default baud rate: {baud_rate}")
 
-def schedule_bms_reinit():
-    initiate_bms_communication()
-    # threading.Timer(60, schedule_bms_reinit).start()
-    # logger.info(f"schedule_bms_reinit start")
+    device_nameprocessed = device_name.lower().replace(" ", "_")
 
-def run():
+    device_info = {
+        "identifiers": f"{device_nameprocessed}_{battery_manufacturer}_{battery_model}",
+        "name": device_name,
+        "manufacturer": battery_manufacturer,
+        "model": battery_model,
+        "sw_version": "1.0"
+    }
+
+    device_name = device_nameprocessed
+
+    # Configure logging
+    logging.basicConfig(level=logging.DEBUG if debug else logging.INFO,
+                        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    logger = logging.getLogger(__name__)
+
+    def initiate_bms_communication():
+        global bms_comm
+        bms_comm = BMSCommunication(interface, serial_port, baud_rate, ethernet_ip, ethernet_port, buffer_size, debug)
+        return bms_comm.connect()
+
+    def schedule_bms_reinit():
+        initiate_bms_communication()
+        # threading.Timer(60, schedule_bms_reinit).start()
+        # logger.info(f"schedule_bms_reinit start")
 
     logger.info(f"interface: {interface}")
     logger.info(f"serial_port: {serial_port}")
@@ -98,9 +172,6 @@ def run():
     logger.info(f"ethernet_ip: {ethernet_ip}")
     logger.info(f"ethernet_port: {ethernet_port}")
 
-
-    # Connect to HA_REST_API
-    # ha_comm = HA_REST_API(long_lived_access_token)
     # Connect to HA_MQTT
     ha_comm = HA_MQTT(mqtt_broker, mqtt_port, mqtt_username, mqtt_password, host_name, device_name, device_info, debug)
     mqtt_client = ha_comm.connect()
@@ -254,4 +325,12 @@ def run():
             logger.info("Please use RS232")
 
 if __name__ == "__main__":
-    run()
+    # Parse command line arguments
+    args = parse_arguments()
+    
+    # Check dependencies
+    if not check_dependencies():
+        sys.exit(1)
+    
+    # Run the application
+    run(config_file=args.config, debug_mode=args.debug)
