@@ -18,13 +18,15 @@ class BMSCommunication:
         self.logger = logging.getLogger(__name__)
 
     def connect(self):
-        if self.interface == 'serial' and self.serial_port and self.baud_rate:
+        if self.interface == 'serial':
+            # Set default baudrate to 9600 if not specified
+            if not self.baud_rate:
+                self.baud_rate = 9600
             try:
                 self.logger.info(f"Trying to connect BMS over {self.serial_port}:{self.baud_rate}")
                 self.bms_connection = serial.Serial(self.serial_port, self.baud_rate, timeout=3)
                 self.logger.info(f"Connected to BMS over serial port: {self.serial_port} with baud rate: {self.baud_rate}")
                 self.logger.info("Please ensure the Baud Rate is correctly set. An incorrect baud rate may not raise an immediate error, but it can lead to communication failures or corrupted data.")
-
                 return self.bms_connection
             except serial.SerialException as e:
                 self.logger.error(f"Serial connection error: {e}")
@@ -79,11 +81,13 @@ class BMSCommunication:
             if hasattr(self.bms_connection, 'send'):
                 sent_bytes = self.bms_connection.send(data)
                 self.logger.debug(f"Sent data via TCP: {data.hex().upper()}")
-                
+            
             # Check if the connection is a serial connection
             elif hasattr(self.bms_connection, 'write'):
                 sent_bytes = self.bms_connection.write(data)
                 self.logger.debug(f"Sent data via serial: {data.hex().upper()}")
+                import time
+                time.sleep(0.25)  # Add sleep after writing to serial
             else:
                 raise ValueError("Unsupported connection type")
             return True
