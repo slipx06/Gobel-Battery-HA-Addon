@@ -222,15 +222,17 @@ class PACEBMS232:
     
     
     def parse_analog_data(self, response):
-
+        self.logger.debug("Using parse_analog_data")
         if self.bms_type == "PACE_LV_V1":
+            self.logger.debug("Calling parse_analog_data_v1")
             packs_data = self.parse_analog_data_v1(response)
         else:
+            self.logger.debug("Calling parse_analog_data_v2")
             packs_data = self.parse_analog_data_v2(response)
-
         return packs_data
 
     def parse_analog_data_v1(self, response):
+        self.logger.debug("Using parse_analog_data_v1")
         """
         Parses the ASCII response string to extract pack analog data for multiple packs.
         """
@@ -477,6 +479,7 @@ class PACEBMS232:
 
 
     def parse_analog_data_v2(self, response):
+        self.logger.debug("Using parse_analog_data_v2")
         """
         Parses the ASCII response string to extract pack analog data for multiple packs.
     
@@ -1194,7 +1197,7 @@ class PACEBMS232:
     
     
     def get_analog_data(self, pack_number=None):
-        
+        import traceback
         try:
             # Generate request
             self.logger.debug(f"Trying to prepare analog request")
@@ -1221,7 +1224,7 @@ class PACEBMS232:
             return analog_data
     
         except Exception as e:
-            self.logger.error(f"An error occurred: {e}")
+            self.logger.error(f"An error occurred: {e}\n{traceback.format_exc()}")
             return None
     
     
