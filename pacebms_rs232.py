@@ -479,239 +479,123 @@ class PACEBMS232:
 
 
     def parse_analog_data_v2(self, response):
-        self.logger.debug("Using parse_analog_data_v2")
+        self.logger.debug("Using parse_analog_data_v2 (flat string, byte_index)")
         """
         Parses the ASCII response string to extract pack analog data for multiple packs.
+        Returns a list of dicts, one per pack.
         """
         packs_data = []
-    
+
         # Ignore the first character if it is '~'
         if response[0] == '~':
             response = response[1:]
-    
-        # Split the response into fields (assuming each field is 2 characters representing a byte)
-        fields = [response[i:i + 2] for i in range(0, len(response), 2)]
-    
-        # Debug: Print the fields to verify their contents
-        self.logger.debug(f"fields: {fields}")
-        # Defensive: Check minimum length for header
-        if len(fields) < 6:
-            self.logger.error(f"Response too short to parse header: {fields}")
-            return None
-        # Check the command and response validity
-        if fields[2] != '46' or fields[3] != '00':
-            self.logger.error(f"Invalid command or response code: {fields[2]} {fields[3]}")
-            return None
-    
-        # Extract the length of the data information
+
+        hexstr = response
+        byte_index = 0
+
         try:
-            length = int(fields[4] + fields[5], 16)
-        except Exception as e:
-            self.logger.error(f"Error parsing length from fields: {fields[4:6]} - {e}")
-            return None
-    
-        # Start parsing the data information
-        offset = 6  # Start after fixed header fields
-    
-        # Defensive: Check offset
-        if offset >= len(fields):
-            self.logger.error(f"Offset {offset} out of range for fields: {fields}")
-            return None
-        # INFOFLAG
-        try:
-            infoflag = int(fields[offset], 16)
-        except Exception as e:
-            self.logger.error(f"Error parsing infoflag at offset {offset}: {e}")
-            return None
-        offset += 1
-    
-        # Number of packs
-        if offset >= len(fields):
-            self.logger.error(f"Offset {offset} out of range for fields (num_packs): {fields}")
-            return None
-        try:
-            num_packs = int(fields[offset], 16)
-        except Exception as e:
-            self.logger.error(f"Error parsing num_packs at offset {offset}: {e}")
-            return None
-        offset += 1
-    
-        for pack_index in range(num_packs):
-            pack_data = {}
-    
-            # Number of cells
-            if offset >= len(fields):
-                self.logger.error(f"Offset {offset} out of range for fields (num_cells): {fields}")
-                return None
-            try:
-                num_cells = int(fields[offset], 16)
-            except Exception as e:
-                self.logger.error(f"Error parsing num_cells at offset {offset}: {e}")
-                return None
-            offset += 1
-            pack_data['view_num_cells'] = num_cells
-    
-            # Cell voltages
-            cell_voltages = []
-            for cell_index in range(num_cells):
-                if offset + 1 >= len(fields):
-                    self.logger.error(f"Offset {offset} out of range for cell voltage (cell {cell_index}): {fields}")
+            # Header: 2 (VER) + 2 (ADR) + 2 (FIXED) + 2 (RTN) + 2 (LEN) + 2 (LENID)
+            byte_index += 12
+            # INFOFLAG
+            infoflag = int(hexstr[byte_index:byte_index+2], 16)
+            byte_index += 2
+            # Number of packs
+            num_packs = int(hexstr[byte_index:byte_index+2], 16)
+            byte_index += 2
+
+            for pack_index in range(num_packs):
+                pack_data = {}
+                # Number of cells
+                num_cells = int(hexstr[byte_index:byte_index+2], 16)
+                pack_data['view_num_cells'] = num_cells
+                byte_index += 2
+                # Cell voltages
+                cell_voltages = []
+                for cell_index in range(num_cells):
+                    voltage = int(hexstr[byte_index:byte_index+4], 16)
+                    cell_voltages.append(voltage)
+                    byte_index += 4
+                pack_data['cell_voltages'] = cell_voltages
+                if not cell_voltages:
+                    self.logger.error(f"No cell voltages found for pack {pack_index}")
                     return None
+                cell_voltage_max = max(cell_voltages)
+                cell_voltage_min = min(cell_voltages)
+                cell_voltage_max_index = cell_voltages.index(cell_voltage_max) + 1
+                cell_voltage_min_index = cell_voltages.index(cell_voltage_min) + 1
+                pack_data['cell_voltage_max'] = cell_voltage_max
+                pack_data['cell_voltage_min'] = cell_voltage_min
+                pack_data['cell_voltage_max_index'] = cell_voltage_max_index
+                pack_data['cell_voltage_min_index'] = cell_voltage_min_index
+                pack_data['cell_voltage_diff'] = cell_voltage_max - cell_voltage_min
+                # Number of temperature sensors
+                num_temps = int(hexstr[byte_index:byte_index+2], 16)
+                pack_data['view_num_temps'] = num_temps
+                byte_index += 2
+                # Temperatures
+                temperatures = []
+                for temp_index in range(num_temps):
+                    temperature = int(hexstr[byte_index:byte_index+4], 16)
+                    temperature = round(temperature / 10 - 273.15, 2)
+                    temperatures.append(temperature)
+                    byte_index += 4
+                pack_data['temperatures'] = temperatures
+                # Pack current
+                pack_current = int(hexstr[byte_index:byte_index+4], 16)
+                if pack_current >= 32768:
+                    pack_current = -1 * (65535 - pack_current)
+                pack_current = pack_current / 100
+                pack_data['view_current'] = pack_current
+                byte_index += 4
+                # Pack total voltage
+                pack_total_voltage = int(hexstr[byte_index:byte_index+4], 16) / 1000
+                pack_data['view_voltage'] = round(pack_total_voltage, 2)
+                byte_index += 4
+                pack_power = round(pack_total_voltage * pack_current / 1000, 4)
+                pack_data['view_power'] = pack_power
+                # 使用累积能量计算
                 try:
-                    voltage = int(fields[offset] + fields[offset + 1], 16)  # Combine two bytes for voltage
+                    cumulative_charged, cumulative_discharged = self.calculate_cumulative_energy(pack_power)
                 except Exception as e:
-                    self.logger.error(f"Error parsing cell voltage at offset {offset}: {e}")
-                    return None
-                cell_voltages.append(voltage)
-                offset += 2
-            pack_data['cell_voltages'] = cell_voltages
-
-            if not cell_voltages:
-                self.logger.error(f"No cell voltages found for pack {pack_index}")
-                return None
-            cell_voltage_max = max(cell_voltages)
-            cell_voltage_min = min(cell_voltages)
-            cell_voltage_max_index = cell_voltages.index(cell_voltage_max) + 1
-            cell_voltage_min_index = cell_voltages.index(cell_voltage_min) + 1
-
-            pack_data['cell_voltage_max'] = cell_voltage_max
-            pack_data['cell_voltage_min'] = cell_voltage_min
-            pack_data['cell_voltage_max_index'] = cell_voltage_max_index
-            pack_data['cell_voltage_min_index'] = cell_voltage_min_index
-
-            pack_data['cell_voltage_diff'] = cell_voltage_max - cell_voltage_min
-    
-            # Number of temperature sensors
-            if offset >= len(fields):
-                self.logger.error(f"Offset {offset} out of range for fields (num_temps): {fields}")
-                return None
-            try:
-                num_temps = int(fields[offset], 16)
-            except Exception as e:
-                self.logger.error(f"Error parsing num_temps at offset {offset}: {e}")
-                return None
-            offset += 1
-            pack_data['view_num_temps'] = num_temps
-    
-            # Temperatures
-            temperatures = []
-            for temp_index in range(num_temps):
-                if offset + 1 >= len(fields):
-                    self.logger.error(f"Offset {offset} out of range for temperature (temp {temp_index}): {fields}")
-                    return None
+                    self.logger.error(f"Error calculating cumulative energy: {e}")
+                    cumulative_charged, cumulative_discharged = 0, 0
+                pack_data['view_energy_charged'] = cumulative_charged
+                pack_data['view_energy_discharged'] = cumulative_discharged
+                # Pack remain capacity
+                pack_remain_capacity = int(hexstr[byte_index:byte_index+4], 16) / 100
+                pack_data['view_remain_capacity'] = round(pack_remain_capacity, 2)
+                byte_index += 4
+                # Define number P (skip 2 chars)
+                define_number_p = int(hexstr[byte_index:byte_index+2], 16)
+                byte_index += 2
+                # Pack full capacity
+                pack_full_capacity = int(hexstr[byte_index:byte_index+4], 16) / 100
+                pack_data['view_full_capacity'] = round(pack_full_capacity, 2)
+                byte_index += 4
                 try:
-                    temperature = int(fields[offset] + fields[offset + 1], 16)  # Combine two bytes for temperature
-                    temperature = round(temperature / 10 - 273.15, 2)  # Convert tenths of degrees Kelvin to degrees Celsius
+                    pack_data['view_SOC'] = round(pack_remain_capacity / pack_full_capacity * 100, 1)
                 except Exception as e:
-                    self.logger.error(f"Error parsing temperature at offset {offset}: {e}")
-                    return None
-                temperatures.append(temperature)
-                offset += 2
-            pack_data['temperatures'] = temperatures
-    
-            # Pack current
-            if offset + 1 >= len(fields):
-                self.logger.error(f"Offset {offset} out of range for pack current: {fields}")
-                return None
-            try:
-                pack_current = fields[offset] + fields[offset + 1]  # Combine two bytes for current
-                pack_current = self.hex_to_signed(pack_current) / 100
-            except Exception as e:
-                self.logger.error(f"Error parsing pack current at offset {offset}: {e}")
-                return None
-            offset += 2
-            pack_data['view_current'] = pack_current
-    
-            # Pack total voltage
-            if offset + 1 >= len(fields):
-                self.logger.error(f"Offset {offset} out of range for pack total voltage: {fields}")
-                return None
-            try:
-                pack_total_voltage = int(fields[offset] + fields[offset + 1], 16)  # Combine two bytes for total voltage
-                pack_total_voltage = round(pack_total_voltage / 1000, 2)  # Convert mV to V
-            except Exception as e:
-                self.logger.error(f"Error parsing pack total voltage at offset {offset}: {e}")
-                return None
-            offset += 2
-            pack_data['view_voltage'] = pack_total_voltage
+                    self.logger.error(f"Error calculating SOC: {e}")
+                    pack_data['view_SOC'] = 0
+                # Cycle number
+                cycle_number = int(hexstr[byte_index:byte_index+4], 16)
+                pack_data['view_cycle_number'] = cycle_number
+                byte_index += 4
+                # Pack design capacity
+                pack_design_capacity = int(hexstr[byte_index:byte_index+4], 16) / 100
+                pack_data['view_design_capacity'] = round(pack_design_capacity, 2)
+                byte_index += 4
+                try:
+                    pack_data['view_SOH'] = round(pack_full_capacity / pack_design_capacity * 100, 0)
+                except Exception as e:
+                    self.logger.error(f"Error calculating SOH: {e}")
+                    pack_data['view_SOH'] = 0
+                packs_data.append(pack_data)
+            return packs_data
+        except Exception as e:
+            self.logger.error(f"Error parsing analog data v2: {e}")
+            return None
 
-            pack_power = round(pack_total_voltage * pack_current / 1000, 4) # Convert W to kW
-            pack_data['view_power'] = pack_power
-
-            # 使用累积能量计算
-            cumulative_charged, cumulative_discharged = self.calculate_cumulative_energy(pack_power)
-            pack_data['view_energy_charged'] = cumulative_charged
-            pack_data['view_energy_discharged'] = cumulative_discharged
-            # Pack remain capacity
-            pack_remain_capacity = int(fields[offset] + fields[offset + 1], 16)  # Combine two bytes for remaining capacity
-            pack_remain_capacity = round(pack_remain_capacity / 100, 2)  # Convert 10mAH to AH
-            offset += 2
-            pack_data['view_remain_capacity'] = pack_remain_capacity
-    
-            # Define number P
-            define_number_p = int(fields[offset], 16)
-            offset += 1
-    
-            # Pack full capacity
-            pack_full_capacity = int(fields[offset] + fields[offset + 1], 16)  # Combine two bytes for full capacity
-            pack_full_capacity = round(pack_full_capacity / 100, 2)  # Convert 10mAH to AH
-            offset += 2
-            pack_data['view_full_capacity'] = pack_full_capacity
-    
-            # Cycle number
-            cycle_number = int(fields[offset] + fields[offset + 1], 16)  # Combine two bytes for cycle number
-            offset += 2
-            pack_data['view_cycle_number'] = cycle_number
-    
-            # Pack design capacity
-            pack_design_capacity = int(fields[offset] + fields[offset + 1], 16)  # Combine two bytes for design capacity
-            pack_design_capacity = round(pack_design_capacity / 100, 2)  # Convert 10mAH to AH
-            offset += 2
-            pack_data['view_design_capacity'] = pack_design_capacity
-
-            # Pack SOC
-            pack_soc = int(fields[offset], 16)  # SOC in percentage
-            offset += 1
-            pack_data['view_SOC'] = round(pack_soc, 1)
-
-            # Accumulated charge capacity
-            # accumulated_charge_capacity = int(fields[offset] + fields[offset + 1] + fields[offset + 2] + fields[offset + 3], 16)  # Combine four bytes for accumulated charge capacity
-            # accumulated_charge_capacity = round(accumulated_charge_capacity, 2)  # Convert to AH
-            offset += 4
-            # pack_data['accumulated_charge_capacity'] = accumulated_charge_capacity
-
-            # Accumulated discharge capacity
-            # accumulated_discharge_capacity = int(fields[offset] + fields[offset + 1] + fields[offset + 2] + fields[offset + 3], 16)  # Combine four bytes for accumulated discharge capacity
-            # accumulated_discharge_capacity = round(accumulated_discharge_capacity, 2)  # Convert to AH
-            offset += 4
-            # pack_data['accumulated_discharge_capacity'] = accumulated_discharge_capacity
-
-            # Pack SOH
-            pack_soh = int(fields[offset], 16)  # SOH in percentage
-            offset += 1
-            pack_data['view_SOH'] = round(pack_soh, 1)
-
-            # Vbat independent total voltage
-            # vbat_total_voltage = int(fields[offset] + fields[offset + 1], 16)  # Combine two bytes for Vbat total voltage
-            # vbat_total_voltage = round(vbat_total_voltage / 1000, 2)  # Convert 10mV to V
-            offset += 2
-            # pack_data['view_voltage_2nd'] = vbat_total_voltage
-
-            # Secondary current sampling
-            # secondary_current = int(fields[offset] + fields[offset + 1], 16)  # Combine two bytes for secondary current
-            # secondary_current = self.hex_to_signed(secondary_current) / 100  # Convert 10mA to A
-            offset += 2
-            # pack_data['secondary_current'] = secondary_current
-    
-            packs_data.append(pack_data)
-
-        # print(packs_data)
-    
-        return packs_data
-    
-    
-    
-    
     def extract_warnstate(self, data):
         # Ensure the data starts with the SOI character (~)
         if data[0] != '~':
